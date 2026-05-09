@@ -1,42 +1,80 @@
 const express = require("express");
-const axios = require("axios");
-const fs = require("fs");
-const path = require("path");
+const { chromium } = require("playwright");
 
 const app = express();
 app.use(express.json({ limit: "20mb" }));
 
 const jobs = {};
-const OUT_DIR = path.join(__dirname, "outputs");
 
-if (!fs.existsSync(OUT_DIR)) {
-  fs.mkdirSync(OUT_DIR, { recursive: true });
-}
+async function createWithChatGPT(jobId, data) {
+  const browser = await chromium.connectOverCDP("http://127.0.0.1:9222");
+  const context = browser.contexts()[0];
+  const page = await context.newPage();
 
-async function downloadFile(url, filepath) {
-  const response = await axios.get(url, {
-    responseType: "arraybuffer",
-    headers: {
-      "User-Agent": "Mozilla/5.0"
-    }
+  jobs[jobId].status = "running";
+
+  await page.goto("https://chatgpt.com", {
+    waitUntil: "domcontentloaded",
+    timeout: 60000
   });
 
-  fs.writeFileSync(filepath, response.data);
+  await page.waitForTimeout(3000);
+
+  const prompt = `
+${data.prompt}
+
+Referans görsel:
+${data.sourceImageUrl}
+
+PUSULA SPOR logosu:
+${data.logoUrl || "Logo daha sonra footer olarak eklenecek."}
+
+Haber başlığı:
+${data.title}
+`;
+
+  const textarea = page.locator("textarea").first();
+
+  await textarea.waitFor({ timeout: 60000 });
+  await textarea.fill(prompt);
+  await page.keyboard.press("Enter");
+
+  jobs[jobId].status = "waiting_image";
+
+  // Görsel üretimi için bekle
+  await page.waitForTimeout(120000);
+
+  // Sayfadaki son görseli bul
+  const images = await page.locator("img").evaluateAll(imgs =>
+    imgs.map(img => img.src).filter(src =>
+      src &&
+      src.startsWith("http") &&
+      !src.includes("avatar") &&
+      !src.includes("favicon")
+    )
+  );
+
+  if (!images.length) {
+    throw new Error("No generated image found");
+  }
+
+  const finalImage = images[images.length - 1];
+
+  jobs[jobId].status = "done";
+  jobs[jobId].imageUrl = finalImage;
+
+  await page.close();
 }
 
 app.get("/", (req, res) => {
-  res.status(200).send("OK");
+  res.send("OK");
 });
 
 app.post("/create-image", async (req, res) => {
   const jobId = Date.now().toString();
-  const { title, sourceImageUrl, prompt } = req.body;
 
   jobs[jobId] = {
-    status: "processing",
-    title,
-    sourceImageUrl,
-    prompt,
+    status: "queued",
     imageUrl: null,
     error: null
   };
@@ -46,19 +84,10 @@ app.post("/create-image", async (req, res) => {
     jobId
   });
 
-  try {
-    const jobDir = path.join(OUT_DIR, jobId);
-    fs.mkdirSync(jobDir, { recursive: true });
-
-    const sourcePath = path.join(jobDir, "source.jpg");
-    await downloadFile(sourceImageUrl, sourcePath);
-
-    jobs[jobId].status = "done";
-    jobs[jobId].imageUrl = `/file/${jobId}/source.jpg`;
-  } catch (err) {
+  createWithChatGPT(jobId, req.body).catch(err => {
     jobs[jobId].status = "error";
     jobs[jobId].error = err.message;
-  }
+  });
 });
 
 app.get("/result/:jobId", (req, res) => {
@@ -68,25 +97,9 @@ app.get("/result/:jobId", (req, res) => {
     return res.json({ status: "not_found" });
   }
 
-  const baseUrl = `${req.protocol}://${req.get("host")}`;
-
-  res.json({
-    status: job.status,
-    imageUrl: job.imageUrl ? `${baseUrl}${job.imageUrl}` : null,
-    error: job.error
-  });
-});
-
-app.get("/file/:jobId/:filename", (req, res) => {
-  const filePath = path.join(OUT_DIR, req.params.jobId, req.params.filename);
-
-  if (!fs.existsSync(filePath)) {
-    return res.status(404).send("File not found");
-  }
-
-  res.sendFile(filePath);
+  res.json(job);
 });
 
 app.listen(3000, "0.0.0.0", () => {
-  console.log("Listening on 3000");
+  console.log("Local worker running on 3000");
 });
