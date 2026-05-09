@@ -4,6 +4,7 @@ const path = require("path");
 const axios = require("axios");
 
 const app = express();
+
 app.use(express.json({ limit: "20mb" }));
 
 const jobs = {};
@@ -22,6 +23,13 @@ async function downloadFile(url, filepath) {
 
   fs.writeFileSync(filepath, response.data);
 }
+
+app.get("/", (req, res) => {
+  res.json({
+    status: "ok",
+    message: "Pusula worker alive",
+  });
+});
 
 app.post("/create-image", async (req, res) => {
   const jobId = Date.now().toString();
@@ -63,7 +71,6 @@ app.post("/create-image", async (req, res) => {
       await downloadFile(logoUrl, logoPath);
     }
 
-    // Şimdilik test için source görseli final gibi döndürüyoruz.
     jobs[jobId].status = "done";
     jobs[jobId].imageUrl = `/file/${jobId}/source.jpg`;
 
@@ -99,6 +106,8 @@ app.get("/file/:jobId/:filename", (req, res) => {
   res.sendFile(filePath);
 });
 
-app.listen(process.env.PORT || 3000, () => {
-  console.log("Worker running");
+const PORT = process.env.PORT || 3000;
+
+app.listen(PORT, "0.0.0.0", () => {
+  console.log(`Worker running on port ${PORT}`);
 });
