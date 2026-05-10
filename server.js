@@ -4,29 +4,20 @@ const fs = require("fs");
 const path = require("path");
 
 const app = express();
-
 app.use(express.json({ limit: "20mb" }));
 
 const jobs = {};
-
 const OUT_DIR = path.join(__dirname, "outputs");
 const ASSETS_DIR = path.join(__dirname, "assets");
 
-if (!fs.existsSync(OUT_DIR)) {
-  fs.mkdirSync(OUT_DIR, { recursive: true });
-}
-
-if (!fs.existsSync(ASSETS_DIR)) {
-  fs.mkdirSync(ASSETS_DIR, { recursive: true });
-}
+if (!fs.existsSync(OUT_DIR)) fs.mkdirSync(OUT_DIR, { recursive: true });
+if (!fs.existsSync(ASSETS_DIR)) fs.mkdirSync(ASSETS_DIR, { recursive: true });
 
 app.use("/assets", express.static(ASSETS_DIR));
 
 async function downloadFile(url, filepath) {
   const res = await fetch(url, {
-    headers: {
-      "User-Agent": "Mozilla/5.0",
-    },
+    headers: { "User-Agent": "Mozilla/5.0" },
   });
 
   if (!res.ok) {
@@ -34,7 +25,6 @@ async function downloadFile(url, filepath) {
   }
 
   const buffer = Buffer.from(await res.arrayBuffer());
-
   fs.writeFileSync(filepath, buffer);
 }
 
@@ -50,7 +40,6 @@ async function fillPrompt(page, text) {
 
   for (const selector of selectors) {
     const el = page.locator(selector).first();
-
     if (await el.count()) {
       editor = el;
       break;
@@ -87,13 +76,9 @@ async function uploadFiles(page, files) {
 
   if (await attachButton.count()) {
     const chooserPromise = page.waitForEvent("filechooser");
-
     await attachButton.click();
-
     const chooser = await chooserPromise;
-
     await chooser.setFiles(files);
-
     return;
   }
 
@@ -117,63 +102,54 @@ async function clickSend(page) {
   await page.keyboard.press("Enter");
 }
 
-async function downloadGeneratedImageFromButton(page, outputPath) {
+async function getGeneratedImage(page, outputPath) {
   const timeout = Date.now() + 1000 * 60 * 8;
 
   while (Date.now() < timeout) {
-    const downloadButtons = page.locator(
-      "button[aria-label*='Download'], button[aria-label*='İndir'], a[download]"
+    const imageUrls = await page.locator("img").evaluateAll((imgs) =>
+      imgs
+        .map((img) => img.src)
+        .filter(
+          (src) =>
+            src &&
+            src.startsWith("http") &&
+            (src.includes("oaidalleapiprodscus") ||
+              src.includes("files.oaiusercontent.com"))
+        )
     );
 
-    const count = await downloadButtons.count();
-
-    if (count > 0) {
-      const btn = downloadButtons.nth(count - 1);
-
-      const downloadPromise = page.waitForEvent("download", {
-        timeout: 30000,
-      });
-
-      await btn.click();
-
-      const download = await downloadPromise;
-
-      await download.saveAs(outputPath);
-
+    if (imageUrls.length > 0) {
+      const finalUrl = imageUrls[imageUrls.length - 1];
+      await downloadFile(finalUrl, outputPath);
       return;
     }
 
     await page.waitForTimeout(5000);
   }
 
-  throw new Error("Download button not found");
+  throw new Error("Generated image not found");
 }
 
 async function createWithChatGPT(jobId, data) {
   const jobDir = path.join(OUT_DIR, jobId);
-
   fs.mkdirSync(jobDir, { recursive: true });
 
   const sourcePath = path.join(jobDir, "source.jpg");
-
   await downloadFile(data.sourceImageUrl, sourcePath);
 
   const files = [sourcePath];
 
+  // Logo'yu artık GPT'ye zorla kullandırmıyoruz.
+  // Footer/logo overlay'i sonraki aşamada gerçek dosyayla basacağız.
   if (data.logoUrl && data.logoUrl.startsWith("http")) {
     const logoPath = path.join(jobDir, "logo.png");
-
     await downloadFile(data.logoUrl, logoPath);
-
-    files.push(logoPath);
+    // İstersen referans olarak yüklemek için aşağıdaki satırı açarsın:
+    // files.push(logoPath);
   }
 
-  const browser = await chromium.connectOverCDP(
-    "http://127.0.0.1:9222"
-  );
-
+  const browser = await chromium.connectOverCDP("http://127.0.0.1:9222");
   const context = browser.contexts()[0];
-
   const page = await context.newPage();
 
   jobs[jobId].status = "opening_chatgpt";
@@ -186,7 +162,6 @@ async function createWithChatGPT(jobId, data) {
   await page.waitForTimeout(5000);
 
   jobs[jobId].status = "uploading_files";
-
   await uploadFiles(page, files);
 
   await page.waitForTimeout(8000);
@@ -194,14 +169,13 @@ async function createWithChatGPT(jobId, data) {
   const prompt = `
 ${data.prompt}
 
-Referans görsel ve PUSULA SPOR logosu yüklendi.
+Referans görsel yüklendi.
 
 Kurallar:
 - Referans görselin kalite, ışık, kadraj ve premium spor medya hissini koru.
 - De Marke yazısı, logosu, footer'ı veya watermark varsa kaldır.
-- PUSULA SPOR logosunu marka referansı olarak kullan.
-- PUSULA SPOR footer/branding temiz, profesyonel ve okunaklı olsun.
-- Logoyu yeniden çizme, yüklenen logoyu referans al.
+- PUSULA SPOR logosu veya footer üretme.
+- Alt kısımda footer için temiz ve boş alan bırak.
 - Yazılar taşmasın.
 - Screenshot arayüzü, düzenle butonu, indirme butonu, paylaş butonu görünmesin.
 - Amatör, karikatür veya yapay görünmesin.
@@ -214,17 +188,14 @@ ${data.title}
   jobs[jobId].status = "sending_prompt";
 
   await fillPrompt(page, prompt);
-
   await clickSend(page);
 
   jobs[jobId].status = "waiting_image";
 
   const finalPath = path.join(jobDir, "final.png");
-
-  await downloadGeneratedImageFromButton(page, finalPath);
+  await getGeneratedImage(page, finalPath);
 
   jobs[jobId].status = "done";
-
   jobs[jobId].imageUrl = `/file/${jobId}/final.png`;
 
   await page.close();
@@ -258,28 +229,20 @@ app.get("/result/:jobId", (req, res) => {
   const job = jobs[req.params.jobId];
 
   if (!job) {
-    return res.json({
-      status: "not_found",
-    });
+    return res.json({ status: "not_found" });
   }
 
   const baseUrl = `${req.protocol}://${req.get("host")}`;
 
   res.json({
     status: job.status,
-    imageUrl: job.imageUrl
-      ? `${baseUrl}${job.imageUrl}`
-      : null,
+    imageUrl: job.imageUrl ? `${baseUrl}${job.imageUrl}` : null,
     error: job.error,
   });
 });
 
 app.get("/file/:jobId/:filename", (req, res) => {
-  const filePath = path.join(
-    OUT_DIR,
-    req.params.jobId,
-    req.params.filename
-  );
+  const filePath = path.join(OUT_DIR, req.params.jobId, req.params.filename);
 
   if (!fs.existsSync(filePath)) {
     return res.status(404).send("File not found");
