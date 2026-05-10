@@ -17,7 +17,11 @@ app.use("/assets", express.static(ASSETS_DIR));
 
 async function downloadFile(url, filepath) {
   const res = await fetch(url, { headers: { "User-Agent": "Mozilla/5.0" } });
-  if (!res.ok) throw new Error(`Download failed: ${res.status} ${url}`);
+
+  if (!res.ok) {
+    throw new Error(`Download failed: ${res.status} ${url}`);
+  }
+
   const buffer = Buffer.from(await res.arrayBuffer());
   fs.writeFileSync(filepath, buffer);
 }
@@ -31,8 +35,25 @@ async function fillPrompt(page, text) {
 
 async function uploadFiles(page, files) {
   const input = page.locator("input[type='file']").first();
-  await input.waitFor({ timeout: 60000 });
-  await input.setInputFiles(files);
+
+  if (await input.count()) {
+    await input.setInputFiles(files);
+    return;
+  }
+
+  const attachButton = page.locator(
+    "button[aria-label*='Attach'], button[aria-label*='Dosya'], button[aria-label*='Ekle'], button:has-text('+')"
+  ).first();
+
+  if (await attachButton.count()) {
+    const chooserPromise = page.waitForEvent("filechooser");
+    await attachButton.click();
+    const chooser = await chooserPromise;
+    await chooser.setFiles(files);
+    return;
+  }
+
+  throw new Error("File upload input/button not found");
 }
 
 async function downloadGeneratedImageFromButton(page, outputPath) {
