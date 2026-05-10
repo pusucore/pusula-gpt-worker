@@ -4,20 +4,29 @@ const fs = require("fs");
 const path = require("path");
 
 const app = express();
+
 app.use(express.json({ limit: "20mb" }));
 
 const jobs = {};
+
 const OUT_DIR = path.join(__dirname, "outputs");
 const ASSETS_DIR = path.join(__dirname, "assets");
 
-if (!fs.existsSync(OUT_DIR)) fs.mkdirSync(OUT_DIR, { recursive: true });
-if (!fs.existsSync(ASSETS_DIR)) fs.mkdirSync(ASSETS_DIR, { recursive: true });
+if (!fs.existsSync(OUT_DIR)) {
+  fs.mkdirSync(OUT_DIR, { recursive: true });
+}
+
+if (!fs.existsSync(ASSETS_DIR)) {
+  fs.mkdirSync(ASSETS_DIR, { recursive: true });
+}
 
 app.use("/assets", express.static(ASSETS_DIR));
 
 async function downloadFile(url, filepath) {
   const res = await fetch(url, {
-    headers: { "User-Agent": "Mozilla/5.0" },
+    headers: {
+      "User-Agent": "Mozilla/5.0",
+    },
   });
 
   if (!res.ok) {
@@ -25,6 +34,7 @@ async function downloadFile(url, filepath) {
   }
 
   const buffer = Buffer.from(await res.arrayBuffer());
+
   fs.writeFileSync(filepath, buffer);
 }
 
@@ -40,6 +50,7 @@ async function fillPrompt(page, text) {
 
   for (const selector of selectors) {
     const el = page.locator(selector).first();
+
     if (await el.count()) {
       editor = el;
       break;
@@ -52,7 +63,12 @@ async function fillPrompt(page, text) {
 
   await editor.click();
   await page.waitForTimeout(500);
-  await page.keyboard.type(text, { delay: 1 });
+
+  await page.evaluate(async (promptText) => {
+    await navigator.clipboard.writeText(promptText);
+  }, text);
+
+  await page.keyboard.press("Control+V");
 }
 
 async function uploadFiles(page, files) {
@@ -71,9 +87,13 @@ async function uploadFiles(page, files) {
 
   if (await attachButton.count()) {
     const chooserPromise = page.waitForEvent("filechooser");
+
     await attachButton.click();
+
     const chooser = await chooserPromise;
+
     await chooser.setFiles(files);
+
     return;
   }
 
@@ -117,7 +137,9 @@ async function downloadGeneratedImageFromButton(page, outputPath) {
       await btn.click();
 
       const download = await downloadPromise;
+
       await download.saveAs(outputPath);
+
       return;
     }
 
@@ -129,21 +151,29 @@ async function downloadGeneratedImageFromButton(page, outputPath) {
 
 async function createWithChatGPT(jobId, data) {
   const jobDir = path.join(OUT_DIR, jobId);
+
   fs.mkdirSync(jobDir, { recursive: true });
 
   const sourcePath = path.join(jobDir, "source.jpg");
+
   await downloadFile(data.sourceImageUrl, sourcePath);
 
   const files = [sourcePath];
 
   if (data.logoUrl && data.logoUrl.startsWith("http")) {
     const logoPath = path.join(jobDir, "logo.png");
+
     await downloadFile(data.logoUrl, logoPath);
+
     files.push(logoPath);
   }
 
-  const browser = await chromium.connectOverCDP("http://127.0.0.1:9222");
+  const browser = await chromium.connectOverCDP(
+    "http://127.0.0.1:9222"
+  );
+
   const context = browser.contexts()[0];
+
   const page = await context.newPage();
 
   jobs[jobId].status = "opening_chatgpt";
@@ -156,6 +186,7 @@ async function createWithChatGPT(jobId, data) {
   await page.waitForTimeout(5000);
 
   jobs[jobId].status = "uploading_files";
+
   await uploadFiles(page, files);
 
   await page.waitForTimeout(8000);
@@ -183,14 +214,17 @@ ${data.title}
   jobs[jobId].status = "sending_prompt";
 
   await fillPrompt(page, prompt);
+
   await clickSend(page);
 
   jobs[jobId].status = "waiting_image";
 
   const finalPath = path.join(jobDir, "final.png");
+
   await downloadGeneratedImageFromButton(page, finalPath);
 
   jobs[jobId].status = "done";
+
   jobs[jobId].imageUrl = `/file/${jobId}/final.png`;
 
   await page.close();
@@ -224,20 +258,28 @@ app.get("/result/:jobId", (req, res) => {
   const job = jobs[req.params.jobId];
 
   if (!job) {
-    return res.json({ status: "not_found" });
+    return res.json({
+      status: "not_found",
+    });
   }
 
   const baseUrl = `${req.protocol}://${req.get("host")}`;
 
   res.json({
     status: job.status,
-    imageUrl: job.imageUrl ? `${baseUrl}${job.imageUrl}` : null,
+    imageUrl: job.imageUrl
+      ? `${baseUrl}${job.imageUrl}`
+      : null,
     error: job.error,
   });
 });
 
 app.get("/file/:jobId/:filename", (req, res) => {
-  const filePath = path.join(OUT_DIR, req.params.jobId, req.params.filename);
+  const filePath = path.join(
+    OUT_DIR,
+    req.params.jobId,
+    req.params.filename
+  );
 
   if (!fs.existsSync(filePath)) {
     return res.status(404).send("File not found");
