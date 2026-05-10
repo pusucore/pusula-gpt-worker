@@ -16,7 +16,9 @@ if (!fs.existsSync(ASSETS_DIR)) fs.mkdirSync(ASSETS_DIR, { recursive: true });
 app.use("/assets", express.static(ASSETS_DIR));
 
 async function downloadFile(url, filepath) {
-  const res = await fetch(url, { headers: { "User-Agent": "Mozilla/5.0" } });
+  const res = await fetch(url, {
+    headers: { "User-Agent": "Mozilla/5.0" },
+  });
 
   if (!res.ok) {
     throw new Error(`Download failed: ${res.status} ${url}`);
@@ -27,10 +29,30 @@ async function downloadFile(url, filepath) {
 }
 
 async function fillPrompt(page, text) {
-  const el = page.locator("#prompt-textarea, div[contenteditable='true'], textarea").first();
-  await el.waitFor({ timeout: 60000 });
-  await el.click();
-  await page.keyboard.insertText(text);
+  const selectors = [
+    "#prompt-textarea",
+    "div.ProseMirror",
+    "div[contenteditable='true']",
+    "textarea",
+  ];
+
+  let editor = null;
+
+  for (const selector of selectors) {
+    const el = page.locator(selector).first();
+    if (await el.count()) {
+      editor = el;
+      break;
+    }
+  }
+
+  if (!editor) {
+    throw new Error("Prompt input not found");
+  }
+
+  await editor.click();
+  await page.waitForTimeout(500);
+  await page.keyboard.type(text, { delay: 1 });
 }
 
 async function uploadFiles(page, files) {
@@ -41,9 +63,11 @@ async function uploadFiles(page, files) {
     return;
   }
 
-  const attachButton = page.locator(
-    "button[aria-label*='Attach'], button[aria-label*='Dosya'], button[aria-label*='Ekle'], button:has-text('+')"
-  ).first();
+  const attachButton = page
+    .locator(
+      "button[aria-label*='Attach'], button[aria-label*='Dosya'], button[aria-label*='Ekle'], button:has-text('+')"
+    )
+    .first();
 
   if (await attachButton.count()) {
     const chooserPromise = page.waitForEvent("filechooser");
@@ -54,6 +78,23 @@ async function uploadFiles(page, files) {
   }
 
   throw new Error("File upload input/button not found");
+}
+
+async function clickSend(page) {
+  await page.waitForTimeout(1000);
+
+  const sendButton = page
+    .locator(
+      "button[data-testid='send-button'], button[aria-label*='Send'], button[aria-label*='Gönder']"
+    )
+    .first();
+
+  if (await sendButton.count()) {
+    await sendButton.click();
+    return;
+  }
+
+  await page.keyboard.press("Enter");
 }
 
 async function downloadGeneratedImageFromButton(page, outputPath) {
@@ -68,8 +109,13 @@ async function downloadGeneratedImageFromButton(page, outputPath) {
 
     if (count > 0) {
       const btn = downloadButtons.nth(count - 1);
-      const downloadPromise = page.waitForEvent("download", { timeout: 30000 });
+
+      const downloadPromise = page.waitForEvent("download", {
+        timeout: 30000,
+      });
+
       await btn.click();
+
       const download = await downloadPromise;
       await download.saveAs(outputPath);
       return;
@@ -104,7 +150,7 @@ async function createWithChatGPT(jobId, data) {
 
   await page.goto("https://chatgpt.com", {
     waitUntil: "domcontentloaded",
-    timeout: 60000
+    timeout: 60000,
   });
 
   await page.waitForTimeout(5000);
@@ -135,8 +181,9 @@ ${data.title}
 `;
 
   jobs[jobId].status = "sending_prompt";
+
   await fillPrompt(page, prompt);
-  await page.keyboard.press("Enter");
+  await clickSend(page);
 
   jobs[jobId].status = "waiting_image";
 
@@ -159,12 +206,15 @@ app.post("/create-image", async (req, res) => {
   jobs[jobId] = {
     status: "queued",
     imageUrl: null,
-    error: null
+    error: null,
   };
 
-  res.json({ status: "processing", jobId });
+  res.json({
+    status: "processing",
+    jobId,
+  });
 
-  createWithChatGPT(jobId, req.body).catch(err => {
+  createWithChatGPT(jobId, req.body).catch((err) => {
     jobs[jobId].status = "error";
     jobs[jobId].error = err.message;
   });
@@ -173,14 +223,16 @@ app.post("/create-image", async (req, res) => {
 app.get("/result/:jobId", (req, res) => {
   const job = jobs[req.params.jobId];
 
-  if (!job) return res.json({ status: "not_found" });
+  if (!job) {
+    return res.json({ status: "not_found" });
+  }
 
   const baseUrl = `${req.protocol}://${req.get("host")}`;
 
   res.json({
     status: job.status,
     imageUrl: job.imageUrl ? `${baseUrl}${job.imageUrl}` : null,
-    error: job.error
+    error: job.error,
   });
 });
 
