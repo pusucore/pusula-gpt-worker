@@ -8,8 +8,12 @@ app.use(express.json({ limit: "20mb" }));
 
 const jobs = {};
 const OUT_DIR = path.join(__dirname, "outputs");
+const ASSETS_DIR = path.join(__dirname, "assets");
 
 if (!fs.existsSync(OUT_DIR)) fs.mkdirSync(OUT_DIR, { recursive: true });
+if (!fs.existsSync(ASSETS_DIR)) fs.mkdirSync(ASSETS_DIR, { recursive: true });
+
+app.use("/assets", express.static(ASSETS_DIR));
 
 async function downloadFile(url, filepath) {
   const res = await fetch(url, { headers: { "User-Agent": "Mozilla/5.0" } });
@@ -19,11 +23,7 @@ async function downloadFile(url, filepath) {
 }
 
 async function fillPrompt(page, text) {
-  const selectors = [
-    "#prompt-textarea",
-    "div[contenteditable='true']",
-    "textarea"
-  ];
+  const selectors = ["#prompt-textarea", "div[contenteditable='true']", "textarea"];
 
   for (const selector of selectors) {
     const el = page.locator(selector).first();
@@ -45,38 +45,31 @@ async function uploadFiles(page, files) {
     return;
   }
 
-  const attachButton = page.locator(
-    "button[aria-label*='Attach'], button[aria-label*='Dosya'], button[aria-label*='Ekle']"
-  ).first();
-
-  if (await attachButton.count()) {
-    const chooserPromise = page.waitForEvent("filechooser");
-    await attachButton.click();
-    const chooser = await chooserPromise;
-    await chooser.setFiles(files);
-    return;
-  }
-
-  throw new Error("File upload input/button not found");
+  throw new Error("File upload input not found");
 }
 
-async function waitAndScreenshotGeneratedImage(page, outputPath) {
-  const started = Date.now();
-  const timeout = 1000 * 60 * 5;
+async function getGeneratedImage(page, outputPath) {
+  const timeout = Date.now() + 1000 * 60 * 6;
 
-  while (Date.now() - started < timeout) {
-    const candidates = page.locator("img");
+  while (Date.now() < timeout) {
+    const imgs = await page.locator("img").evaluateAll(imgs =>
+      imgs
+        .map(img => img.src)
+        .filter(src =>
+          src &&
+          src.startsWith("http") &&
+          !src.includes("avatar") &&
+          !src.includes("favicon") &&
+          !src.includes("openai") &&
+          !src.includes("logo")
+        )
+    );
 
-    const count = await candidates.count();
+    const finalUrl = imgs[imgs.length - 1];
 
-    for (let i = count - 1; i >= 0; i--) {
-      const img = candidates.nth(i);
-      const box = await img.boundingBox().catch(() => null);
-
-      if (box && box.width >= 450 && box.height >= 450) {
-        await img.screenshot({ path: outputPath });
-        return;
-      }
+    if (finalUrl) {
+      await downloadFile(finalUrl, outputPath);
+      return;
     }
 
     await page.waitForTimeout(5000);
@@ -121,17 +114,18 @@ async function createWithChatGPT(jobId, data) {
   const prompt = `
 ${data.prompt}
 
-Referans görsel yüklendi.
-PUSULA SPOR logosu yüklendiyse onu marka referansı olarak kullan.
+Referans görsel ve PUSULA SPOR logosu yüklendi.
 
 Kurallar:
-- Referans görselin kalitesini, ışığını, kompozisyonunu ve premium spor medya hissini koru.
+- Referans görselin kalite, ışık, kadraj ve premium spor medya hissini koru.
 - De Marke yazısı, logosu, footer'ı veya watermark varsa kaldır.
-- PUSULA SPOR markasına uygun özgün bir futbol medya posteri üret.
+- PUSULA SPOR logosunu marka referansı olarak kullan.
+- PUSULA SPOR footer/branding temiz, profesyonel ve okunaklı olsun.
 - Logo bozulmasın.
 - Yazılar taşmasın.
-- Amatör veya yapay görünmesin.
-- Premium, gerçekçi, editorial spor posteri kalitesinde olsun.
+- Screenshot arayüzü, düzenle butonu, indirme butonu, paylaş butonu görünmesin.
+- Amatör, karikatür veya yapay görünmesin.
+- Premium, gerçekçi, editorial futbol posteri kalitesinde olsun.
 
 Haber başlığı:
 ${data.title}
@@ -144,7 +138,7 @@ ${data.title}
   jobs[jobId].status = "waiting_image";
 
   const finalPath = path.join(jobDir, "final.png");
-  await waitAndScreenshotGeneratedImage(page, finalPath);
+  await getGeneratedImage(page, finalPath);
 
   jobs[jobId].status = "done";
   jobs[jobId].imageUrl = `/file/${jobId}/final.png`;
