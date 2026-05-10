@@ -2,6 +2,7 @@ const express = require("express");
 const { chromium } = require("playwright");
 const fs = require("fs");
 const path = require("path");
+const sharp = require("sharp");
 
 const app = express();
 app.use(express.json({ limit: "20mb" }));
